@@ -23,9 +23,18 @@ Focus: **prompt engineering**, **agent behavior**, multilingual conversation (En
 
 ### 1. Environment Setup
 
+**Linux / macOS / Git Bash:**
+
 ```bash
 cp .env.example backend/.env
 # Edit backend/.env and add your OPENROUTER_API_KEY
+```
+
+**Windows (PowerShell):**
+
+```powershell
+Copy-Item .env.example backend\.env
+# Edit backend\.env and add your OPENROUTER_API_KEY
 ```
 
 ### 2. Backend
@@ -45,6 +54,24 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+## Architecture & Prompt Approach
+
+The bot is **prompt-first**: agent behavior comes from `system_prompt.txt`, with FastAPI orchestrating memory, booking, and analytics around a single LLM call per chat turn.
+
+**Per message (`POST /api/chat`):**
+
+1. Append the user message to session history.
+2. Call OpenRouter once with the system prompt, full transcript, and a compact JSON summary of known lead slots (memory without re-asking).
+3. Update slots with **rule-based heuristics** (configuration, objections, opt-out, visit intent, etc.) — no second LLM call during chat.
+4. If a site visit is requested and not yet attempted, run the **booking simulator** (`success` / `fail` / `random` from env or sidebar toggle).
+5. On success or failure, inject a system note and call the LLM once more so the agent confirms or recovers honestly (never claims booked after a fail).
+
+**End conversation (`POST /api/sessions/{id}/end`):**
+
+- One LLM call extracts structured **analytics JSON** (budget, interest, visit status, follow-up, outcome) for the lead dossier in the UI.
+
+**Why this shape:** Free models are slow and inconsistent at tool-calling; a strong system prompt plus backend booking + heuristic slots keeps behavior demo-safe and latency reasonable (~one LLM call per normal turn).
 
 ## Project Structure
 
@@ -128,9 +155,10 @@ See [`docs/TEST_CASES.md`](docs/TEST_CASES.md) for manual test scenarios.
 
 ## Known Limitations
 
-- Free OpenRouter models may have rate limits and variable latency
+- Free OpenRouter models may have rate limits and variable latency (~5–8s per turn on free tier)
 - No persistent database — sessions don't survive restarts
-- Slot extraction depends on LLM JSON output quality
+- Live slot updates use **heuristics** (regex/keywords), so sidebar fields can miss nuance or misfire on unusual phrasing; full conversation context still goes to the LLM each turn
+- End-of-chat analytics depends on LLM JSON output quality
 - No authentication or multi-user support
 - No actual telephony or voice interface
 
