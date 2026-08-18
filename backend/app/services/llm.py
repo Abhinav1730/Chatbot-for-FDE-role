@@ -16,6 +16,28 @@ from app.schemas import (
 from app.services.booking import get_client, load_system_prompt
 
 
+def _sanitize_model_output(text: str) -> str:
+    """Remove model artifacts like <pad> tokens that some free models leak."""
+    text = re.sub(r"</?pad>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _is_invalid_reply(text: str) -> bool:
+    if not text or len(text) < 3:
+        return True
+    # Mostly non-alphanumeric garbage
+    alnum = sum(1 for c in text if c.isalnum())
+    return alnum < 3
+
+
+FALLBACK_REPLY = (
+    "I don't have confirmed details on that in my current information. "
+    "A site visit or a quick call with our sales team would give you accurate information — "
+    "would either work for you?"
+)
+
+
 def _chat_completion(
     messages: list[dict[str, str]],
     model: str | None = None,
@@ -68,7 +90,13 @@ def generate_greeting() -> str:
 
 def generate_reply(session: Session, extra_system: str | None = None) -> str:
     messages = _build_chat_messages(session, extra_system)
-    return _chat_completion(messages, max_tokens=256)
+    for attempt in range(2):
+        temperature = 0.7 if attempt == 0 else 0.4
+        raw = _chat_completion(messages, max_tokens=256, temperature=temperature)
+        cleaned = _sanitize_model_output(raw)
+        if not _is_invalid_reply(cleaned):
+            return cleaned
+    return FALLBACK_REPLY
 
 
 def _parse_json_from_text(text: str) -> dict[str, Any]:

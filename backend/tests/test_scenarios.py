@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.schemas import BookingMode, BookingStatus, LeadSlots
 from app.services.booking import simulate_booking
-from app.services.llm import merge_extracted_slots, should_attempt_booking
+from app.services.llm import (
+    merge_extracted_slots,
+    should_attempt_booking,
+    _is_invalid_reply,
+    _sanitize_model_output,
+)
 from app.services.slot_extractor import extract_slots_heuristic
 
 client = TestClient(app)
@@ -48,6 +53,15 @@ class TestSlotMerging:
         updated = merge_extracted_slots(slots, {"objections": ["location"]})
         assert "price" in updated.objections
         assert "location" in updated.objections
+
+
+class TestSanitizeModelOutput:
+    def test_strips_pad_tokens(self):
+        raw = "<pad><pad><pad>Hello there<pad>"
+        assert _sanitize_model_output(raw) == "Hello there"
+
+    def test_pad_only_is_invalid(self):
+        assert _is_invalid_reply(_sanitize_model_output("<pad><pad><pad>"))
 
 
 class TestHeuristicExtraction:
@@ -200,6 +214,25 @@ class TestAPIEndpoints:
         data = response.json()
         assert "analytics" in data
         assert data["analytics"]["lead_summary"]
+
+    @patch("app.services.llm._chat_completion")
+    def test_chat_pad_token_fallback(self, mock_chat):
+        mock_chat.side_effect = [
+            "<pad><pad><pad><pad>",
+            "<pad><pad><pad><pad>",
+        ]
+        session = client.post("/api/sessions").json()
+        response = client.post(
+            "/api/chat",
+            json={
+                "session_id": session["session_id"],
+                "message": "Do we have swimming pool in the property?",
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "<pad>" not in data["reply"].lower()
+        assert "don't have" in data["reply"].lower() or "confirmed" in data["reply"].lower()
 
     def test_health(self):
         response = client.get("/api/health")
